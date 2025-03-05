@@ -30,11 +30,7 @@ This repo currently contains examples for the following scientific computing use
 
 ![Bin packing objective](./images/binpack_objective.png)
 
-The bin packing problem is a classic optimization challenge that has far-reaching implications for enterprise organizations across industries. At its core, the problem focuses on finding the most efficient way to pack a set of objects into a finite number of containers or "bins", with the goal of minimizing wasted space. 
-
-This challenge is pervasive in real-world applications, from optimizing shipping and logistics to efficiently allocating resources in data centers and cloud computing environments. With organizations often dealing with large numbers of items and containers, finding optimal packing solutions can lead to significant cost savings and operational efficiencies. 
-
-This solution demonstrates how to scale a single-threaded Python library with [Ray Core](https://docs.ray.io/en/latest/ray-core/walkthrough.html) components.
+The bin packing problem is a classic optimization challenge with significant real-world implications, and this solution demonstrates how to scale a Python library to solve it efficiently using Ray Core components.
 
 Get started here: [Bin Packing Optimization/01_intro_to_binpacking](Bin_Packing_Optimization/01_intro_to_binpacking.py)
 
@@ -53,9 +49,11 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ## License
 
-&copy; 2024 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://www.databricks.com/legal/db-license].  All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://www.databricks.com/legal/db-license].  All included or referenced third party libraries are subject to the licenses set forth below.
 
 | library                                | description             | license    | source                                              |
 |----------------------------------------|-------------------------|------------|-----------------------------------------------------|
 |ray|Framework for scaling AI/Python applications|[Apache 2.0](https://github.com/ray-project/ray/blob/master/LICENSE)|[ray-project/ray](https://github.com/ray-project/ray)|
 |py3dbp|3D Bin Packing implementation|[MIT](https://github.com/enzoruiz/3dbinpacking/blob/master/LICENSE)|[enzoruiz/3dbinpacking](https://github.com/enzoruiz/3dbinpacking)|
+|prometheus|Service monitoring system|[Apache 2.0](https://github.com/prometheus/prometheus/blob/main/LICENSE)|[prometheus/prometheus](https://github.com/prometheus/prometheus)|
+|grafana|Open-source platform for monitoring and observability|[AGPL-3.0-only](https://github.com/grafana/grafana/blob/main/LICENSE)|[grafana/grafana](https://github.com/grafana/grafana/tree/main)|
