@@ -27,7 +27,6 @@ targets:
     mode: production
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com
-      # We explicitly specify /Workspace/Users/tj.cycyota@databricks.com to make sure we only have a single copy.
       root_path: /Workspace/Users/tj@databricks.com/.bundle/${bundle.name}/${bundle.target}
     permissions:
       - user_name: tj@databricks.com
