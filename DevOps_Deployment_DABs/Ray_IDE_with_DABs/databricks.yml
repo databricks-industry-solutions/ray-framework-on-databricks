@@ -1,0 +1,38 @@
+bundle:
+  name: ray_with_dabs_simple
+
+variables:
+  ray_cluster_id:
+    description: ID of Ray Cluster 
+    default: 0226-000002-2k2awuec
+
+resources:
+  jobs:
+    ray_with_dabs_job_simple:
+      name: ray_with_dabs_job_simple
+      tasks:
+        - task_key: ray_application
+          existing_cluster_id: ${var.ray_cluster_id}
+          notebook_task:
+            notebook_path: ./src/ray_application.ipynb
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+      # We explicitly specify /Workspace/Users/tj.cycyota@databricks.com to make sure we only have a single copy.
+      root_path: /Workspace/Users/tj@databricks.com/.bundle/${bundle.name}/${bundle.target}
+    permissions:
+      - user_name: tj@databricks.com
+        level: CAN_MANAGE
+    run_as:
+      user_name: tj@databricks.com
+    variables:
+      ray_cluster_id: 0123-012345-1a2bcdef
