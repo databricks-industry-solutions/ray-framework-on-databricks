@@ -40,6 +40,7 @@ Get started here: [Bin Packing Optimization/01_intro_to_binpacking](Bin_Packing_
 
 ## Authors
 <tj@databricks.com>
+<puneet.jain@databricks.com>
 
 ## Project support 
 
