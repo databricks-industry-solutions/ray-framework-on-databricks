@@ -339,9 +339,18 @@ for key, value in best_trial.params.items():
 from optuna.integration.mlflow import MLflowCallback
 
 
+# Grab experiment and model name
 experiment_name = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
+try:
+  experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 
+except:
+  with mlflow.start_run(run_name="dummy-run"):
+    # Dummy run to create notebook experiment if it doesn't exist
+    mlflow.end_run()
+  experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
+
+# Creae Optuna-Native MLflow Callback
 mlflc = MLflowCallback(
     tracking_uri="databricks",
     metric_name="f1_score_val",

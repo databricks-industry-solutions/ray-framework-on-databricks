@@ -182,10 +182,6 @@ df_full.count()
 
 # COMMAND ----------
 
-df_full.tail(1)
-
-# COMMAND ----------
-
 df_full.write.mode("overwrite").option("mergeSchema", True).saveAsTable(f"{catalog}.{schema}.adult_synthetic_raw")
 
 # COMMAND ----------
