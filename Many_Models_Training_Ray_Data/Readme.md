@@ -71,3 +71,18 @@ This solution demonstrates the following key capabilities:
 - [NeuralProphet Documentation](https://neuralprophet.com/)
 - [Databricks-Ray Integration Guide](https://docs.databricks.com/aws/en/machine-learning/ray/)
 - [MLflow Documentation](https://mlflow.org/docs/latest/index.html)
+
+## Video Demonstration
+
+Watch this video from the Data and AI Summit 2023, where we presented our solution for Marks & Spencer's demand forecasting use case:
+
+[![Parallel Demand Forecasting with Ray and Databricks](https://img.youtube.com/vi/H5ToDhX4Uqg/0.jpg)](https://www.youtube.com/watch?v=H5ToDhX4Uqg)
+
+This video demonstrates:
+- Setting up the environment
+- Data preparation and processing
+- Parallel model training with Ray
+- Hyperparameter tuning
+- Results visualization
+
+> **Note**: This solution was originally developed for Marks & Spencer to address their demand forecasting challenges. The approach demonstrated in this video has been successfully implemented in production, helping M&S optimize their inventory management and supply chain operations.
