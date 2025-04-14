@@ -375,7 +375,10 @@ try:
   experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 
 except:
-  experiment_id = None
+  with mlflow.start_run(run_name="dummy-run"):
+    # Dummy run to create notebook experiment if it doesn't exist
+    mlflow.end_run()
+  experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 
 model_name=f"{catalog}.{schema}.hpo_model_ray_tune_xgboost"
 
@@ -394,7 +397,9 @@ from ray import tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 
 
-mlflow.set_experiment(experiment_name)
+if experiment_id is not None:
+    mlflow.set_experiment(experiment_name)
+
 with mlflow.start_run(run_name ='ray_tune_xgboost', experiment_id=experiment_id) as parent_run:
     # Run our Tuner job
     tuner = tune.Tuner(
@@ -408,6 +413,14 @@ with mlflow.start_run(run_name ='ray_tune_xgboost', experiment_id=experiment_id)
             mode="max", # "min"
             reuse_actors = True # Highly recommended for short training jobs (NOT RECOMMENDED FOR GPU AND LONG TRAINING JOBS)
             ),
+        run_config=train.RunConfig(
+            name="ray_tune_xgboost",
+            callbacks=[
+                MLflowLoggerCallback(
+                    experiment_name=experiment_name,
+                    save_artifact=False,
+                    tags={"mlflow.parentRunId": parent_run.info.run_id})]
+        ),
         param_space=search_space,
     )
 
