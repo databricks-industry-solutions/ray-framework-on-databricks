@@ -85,3 +85,5 @@ This video demonstrates:
 - Hyperparameter tuning
 - Results visualization
 
+## Authors
+- <puneet.jain@databricks.com>
