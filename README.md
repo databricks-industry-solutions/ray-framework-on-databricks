@@ -26,21 +26,54 @@ By adopting these approaches, organizations can modernize their scientific compu
 
 This repo currently contains examples for the following scientific computing use-cases:
 
-### 1. Bin Packing Optimization
+### 1. Batch AI Inference
+
+This solution demonstrates how to leverage Ray's distributed computing capabilities for efficient batch inference across different AI modalities, including text-to-image processing, automatic speech recognition with Whisper-v3, and video processing with Qwen2.5 VL.
+
+Get started here: [Batch AI Inference](Batch_AI_Inference/README.md)
+
+### 2. Bin Packing Optimization
 
 ![Bin packing objective](./images/binpack_objective.png)
 
 The bin packing problem is a classic optimization challenge with significant real-world implications, and this solution demonstrates how to scale a Python library to solve it efficiently using Ray Core components.
 
-Get started here: [Bin Packing Optimization/01_intro_to_binpacking](Bin_Packing_Optimization/01_intro_to_binpacking.py)
+Get started here: [Bin Packing Optimization](Bin_Packing_Optimization/README.md)
+
+### 3. DevOps Deployment with DABs
+
+This solution showcases how to streamline the deployment and management of Ray applications in production environments using Databricks Asset Bundles (DABs), enabling consistent packaging, dependency management, and CI/CD pipeline implementation.
+
+Get started here: [DevOps Deployment with DABs](DevOps_Deployment_DABs/README.md)
+
+### 4. Hyperparameter Optimization
+
+This solution demonstrates how to perform distributed hyperparameter optimization using Ray Tune and Optuna, covering various use cases from general machine learning models to specialized XGBoost and deep learning implementations.
+
+Get started here: [Hyperparameter Optimization](Hyperparam_Optimization/README.md)
+
+### 5. Many Models Training
+
+This solution shows how to implement parallel training of thousands of models using Ray, with a specific focus on demand forecasting using the Walmart M5 dataset. It demonstrates significant reduction in training time through efficient parallelization.
+
+Get started here: [Many Models Training](Many_Models_Training/README.md)
+
+### 6. Ray Dashboard Metrics
+
+This solution provides comprehensive guidance on setting up and utilizing the Ray Dashboard on Databricks for monitoring cluster performance, resource utilization, and application metrics in real-time.
+
+Get started here: [Ray Dashboard Metrics](Ray_Dashboard_Metrics/README.md)
 
 ## Reference Architecture
 ![Ray on Databricks Stack](./images/ray_databricks_stack.png)
 <!-- ![Ray on Databricks Stack](./images/ray_databricks_flow.png) -->
 
 ## Authors
-<tj@databricks.com>
-<puneet.jain@databricks.com>
+- <tj@databricks.com> 
+- <amine.elhelou@databricks.com>
+- <puneet.jain@databricks.com>
+- <samantha.wise@databricks.com>
+
 
 ## Project support 
 
