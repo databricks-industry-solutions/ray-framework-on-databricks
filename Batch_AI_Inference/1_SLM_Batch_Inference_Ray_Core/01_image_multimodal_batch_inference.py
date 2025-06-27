@@ -232,13 +232,16 @@ class InternVLimagePreprocessor():
     
     return processed_images
   
-  def __call__(self, row: dict) -> dict:
+  def __call__(self, row: dict, read_binary: bool=False) -> dict:
     """
     Main ingest & resize function, outputs pixel values as torch Tensor
     """
     # Read image from path or binary stream (NOTE: FOR STREAMING JOBS READ DIRECTLY FROM IMAGE PATH)
-    # image = PIL.Image.open(row["path"]).convert('RGB')
-    image = PIL.Image.open(BytesIO(row["content"])).convert('RGB')
+    if read_binary:
+      image = PIL.Image.open(BytesIO(row["content"])).convert('RGB')
+    
+    else:
+      image = PIL.Image.open(row["path"]).convert('RGB')
 
     # Adjust aspect ratio
     images = self.dynamic_preprocess(image)
@@ -461,11 +464,13 @@ restart = True
 if restart is True:
   try:
     shutdown_ray_cluster()
+
   except:
     pass
 
   try:
     ray.shutdown()
+    
   except:
     pass
 
@@ -475,7 +480,6 @@ num_cpus_head_node = 45 # Cores to use in driver node (Leave 3 cores for driver 
 num_gpu_per_worker = 4 # GPUs per worker node (to use)
 num_gpus_head_node = 4 # GPUs in driver node (to use)
 max_worker_nodes = 1
-
 
 ray_conf = setup_ray_cluster(
   min_worker_nodes=1,
