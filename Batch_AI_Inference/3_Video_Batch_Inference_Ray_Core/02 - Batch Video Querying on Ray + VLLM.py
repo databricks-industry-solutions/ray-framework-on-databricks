@@ -311,7 +311,7 @@ ds = ds.repartition(200)\
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 💾 Step 9: Save Results to Delta Table
+# MAGIC ## 💾 Step 9: Save [Results](url) to Delta Table
 
 # COMMAND ----------
 
