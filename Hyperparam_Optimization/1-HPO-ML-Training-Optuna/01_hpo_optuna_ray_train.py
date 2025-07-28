@@ -6,10 +6,10 @@
 # MAGIC
 # MAGIC Based on dataset size, training time/model complexity, hardware availability and auto-scaling needs, both single and multinode approaches can be considered:
 # MAGIC
-# MAGIC 1. For single node use [Optuna](https://github.com/optuna/optuna) which naitvely supports mlflow callbacks. This approach is recommended if:
+# MAGIC 1. For single node training we recommend using [Optuna](https://github.com/optuna/optuna) which [naitvely supports mlflow callbacks](https://docs.databricks.com/aws/en/machine-learning/automl-hyperparam-tuning/optuna). This approach is recommended if:
 # MAGIC     1. You only have a single/big machine available
 # MAGIC     2. Single training run takes less than 2 seconds (based on dataset size and model architecture)
-# MAGIC 2. For multi-node use [Ray Tune](https://docs.ray.io/en/latest/tune/index.html) by leveraging [ray on spark](https://docs.databricks.com/en/machine-learning/ray/index.html)
+# MAGIC 2. For multi-node you can either use [Optuna](https://docs.databricks.com/aws/en/machine-learning/automl-hyperparam-tuning/optuna) AND/OR use it along with [Ray Tune](https://docs.ray.io/en/latest/tune/index.html) by leveraging [ray on spark](https://docs.databricks.com/en/machine-learning/ray/index.html)
 # MAGIC
 # MAGIC
 # MAGIC **VERY IMPORTANT:** If using GPUs set the `spark.task.resource.gpu.amount 0` spark config on your (multinode) cluster.
@@ -332,11 +332,13 @@ for key, value in best_trial.params.items():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC #### Add `MLflowCallback`, wrap training function and execute as part of parent/child mlflow run
+# MAGIC ### Use native `MLFlow.spark.optuna` flavor: Create a shared storage for distributed optimization
+# MAGIC With `MlflowStorage`, the MLflow Tracking Server can serve as the storage backend. See documentation for [AWS](https://docs.databricks.com/aws/en/machine-learning/automl-hyperparam-tuning/optuna)|[Azure](https://learn.microsoft.com/en-us/azure/databricks/machine-learning/automl-hyperparam-tuning/optuna)|[GCP](https://docs.databricks.com/gcp/en/machine-learning/automl-hyperparam-tuning/optuna).
 
 # COMMAND ----------
 
-from optuna.integration.mlflow import MLflowCallback
+import mlflow
+from mlflow.optuna.storage import MlflowStorage
 
 
 # Grab experiment and model name
@@ -350,16 +352,10 @@ except:
     mlflow.end_run()
   experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 
-# Creae Optuna-Native MLflow Callback
-mlflc = MLflowCallback(
-    tracking_uri="databricks",
-    metric_name="f1_score_val",
-    create_experiment=False,
-    mlflow_kwargs={
-        "experiment_id": experiment_id,
-        "nested":True
-    }
-)
+mlflow.set_experiment(experiment_name)
+print(f"Set experiment to: {experiment_name}")
+
+mlflow_storage = MlflowStorage(experiment_id=experiment_id)
 
 # COMMAND ----------
 
@@ -372,37 +368,50 @@ from mlflow.pyfunc import PyFuncModel
 from mlflow import pyfunc
 
 
-def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, model_name: str, experiment_id: str, include_mlflc: bool) -> optuna.study.study.Study:
+def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, model_name: str, experiment_id: str) -> optuna.study.study.Study:
+
+    # Split data into train and test sets
+    X_train, X_test, Y_train, Y_test = train_test_split(features, labels, test_size=0.2, random_state=rng_seed)
+
+    # Kick distributed HPO as nested runs
+    objective_fn = ObjectiveOptuna(X_train, Y_train)
+    mlflow_optuna_study = MlflowSparkStudy(
+        sampler=optuna_sampler,
+        study_name="single_node_hpo_study",
+        storage=mlflow_storage,
+    )
+    mlflow_optuna_study._directions = ["maximize"]
+    mlflow_optuna_study.optimize(objective_fn, n_trials=n_trials, n_jobs=-1)
+
+    # Extract best trial info
+    best_model_params = optuna_study.best_params
+    best_model_params["random_state"] = rng_seed
+    classifier_type = best_model_params.pop('classifier')
+
+    # Reproduce best classifier
+    if classifier_type  == "LogisticRegression":
+        best_model = LogisticRegression(**best_model_params)
+    elif classifier_type == "RandomForestClassifier":
+        best_model = RandomForestClassifier(**best_model_params)
+    elif classifier_type == "LightGBM":
+        best_model = LGBMClassifier(force_row_wise=True, verbose=-1, **best_model_params)
+
+    # Enable automatic logging of input samples, metrics, parameters, and models
+    mlflow.sklearn.autolog(log_input_examples=True, log_models=False, silent=True)
+    
+    active_run = mlflow.active_run()
+    if not active_run:
+        active_run = client.search_runs(
+            experiment_ids=[experiment_id],
+            filter_string=f"tags.mlflow.runName = '{run_name}'",
+            order_by=["start_time DESC"],
+            max_results=1)[0]
+    
+    run_id = active_run.info.run_id
+
     # Start mlflow run
-    with mlflow.start_run(run_name="single_node_hpo", experiment_id=experiment_id) as parent_run:
+    with mlflow.start_run(run_id=run_id, experiment_id=experiment_id) as parent_run:
 
-        # Split data into train and test sets
-        X_train, X_test, Y_train, Y_test = train_test_split(features, labels, test_size=0.2, random_state=rng_seed)
-
-        # Kick distributed HPO as nested runs
-        objective_fn = ObjectiveOptuna(X_train, Y_train)
-        optuna_study = optuna.create_study(direction="maximize", study_name=f"single_node_hpo_study", sampler=optuna_sampler)
-        if include_mlflc:
-            optuna_study.optimize(objective_fn, n_trials=n_trials, callbacks=[mlflc])
-        else:
-            optuna_study.optimize(objective_fn, n_trials=n_trials)
-
-        # Extract best trial info
-        best_model_params = optuna_study.best_params
-        best_model_params["random_state"] = rng_seed
-        classifier_type = best_model_params.pop('classifier')
-
-        # Reproduce best classifier
-        if classifier_type  == "LogisticRegression":
-            best_model = LogisticRegression(**best_model_params)
-        elif classifier_type == "RandomForestClassifier":
-            best_model = RandomForestClassifier(**best_model_params)
-        elif classifier_type == "LightGBM":
-            best_model = LGBMClassifier(force_row_wise=True, verbose=-1, **best_model_params)
-
-        # Enable automatic logging of input samples, metrics, parameters, and models
-        mlflow.sklearn.autolog(log_input_examples=True, log_models=False, silent=True)
-        
         # Fit best model and log using FE client in parent run
         model_pipeline = Pipeline(steps=[("preprocessor", objective_fn.preprocessor), ("classifier", best_model)])
         model_pipeline.fit(X_train, Y_train)
@@ -442,7 +451,7 @@ def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, mode
 
         mlflow.end_run()
         
-        return optuna_study
+    return optuna_study
 
 # COMMAND ----------
 
@@ -452,13 +461,6 @@ def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, mode
 
 # COMMAND ----------
 
-# Disable mlflow autologging to minimize overhead
-mlflow.autolog(disable=True) # Disable mlflow autologging
-
-# Setting the logging level DEBUG to avoid too verbose logs
-optuna.logging.set_verbosity(optuna.logging.DEBUG)
-optuna.logging.disable_propagation()
-
 # Invoke training function on driver node
 single_node_study = optuna_hpo_fn(
   n_trials=n_trials,
@@ -466,14 +468,7 @@ single_node_study = optuna_hpo_fn(
   labels=Y,
   model_name=f"{catalog}.{schema}.hpo_model_optuna_single_node",
   experiment_id=experiment_id,
-  include_mlflc=True
 )
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC
-# MAGIC **PS : Enabling mlflow logging adds substantial overhead so it can be removed/disabled**
 
 # COMMAND ----------
 
