@@ -451,7 +451,7 @@ def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, mode
 
         mlflow.end_run()
         
-    return optuna_study
+    return mlflow_optuna_study
 
 # COMMAND ----------
 
