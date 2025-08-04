@@ -198,6 +198,10 @@ check_runtime_version(current_cluster=current_cluster)
 
 # COMMAND ----------
 
+
+
+# COMMAND ----------
+
 # Set % (0-1) of cluster to be used for Spark
 proportion_cluster_for_spark = 0.0 # 0.25
 
@@ -211,22 +215,23 @@ setup_ray_cluster(
 
 print("Observations for setup script recommendation:")
 # STEP 1: Determine min and max worker nodes
-## Autoscaling = FALSE
+## Autoscaling = TRUE
 if current_cluster.autoscale:
   print(" - Autoscaling cluster")
-  min_workers = worker_nodes = current_cluster.autoscale.min_workers
-  max_workers = current_cluster.autoscale.max_workers
+  min_workers = current_cluster.autoscale.min_workers
+  max_workers = int(current_cluster.autoscale.max_workers*(1-proportion_cluster_for_spark))
+  active_worker_nodes = len(current_cluster.executors) 
 
   setup_cmd += f"""  min_worker_nodes={min_workers},
   max_worker_nodes={max_workers},
   """
-## Autoscaling = TRUE
+## Autoscaling = FALSE
 else:
   print(" - Non-Autoscaling cluster")
-  worker_nodes = current_cluster.num_workers
+  active_worker_nodes = int(current_cluster.num_workers*(1-proportion_cluster_for_spark))
 
-  setup_cmd += f"""  min_worker_nodes={worker_nodes},
-  max_worker_nodes={worker_nodes},
+  setup_cmd += f"""  min_worker_nodes={active_worker_nodes},
+  max_worker_nodes={active_worker_nodes},
   """
 
 
@@ -236,7 +241,7 @@ worker_driver_match = current_cluster.driver_node_type_id == current_cluster.nod
 if not worker_driver_match:
   print(" - Heterogenous cluster, Driver and Workers are different instance types")
   driver_cores = int(current_cluster.cluster_cores - spark.sparkContext.defaultParallelism)
-  worker_cores = int(spark.sparkContext.defaultParallelism / worker_nodes)
+  worker_cores = int(spark.sparkContext.defaultParallelism / active_worker_nodes)
 
   setup_cmd += f"""num_cpus_worker_node={worker_cores},
   num_cpus_head_node={driver_cores},
@@ -244,10 +249,10 @@ if not worker_driver_match:
 ## Homogenous cluster
 else:
   print(" - Homogenous cluster, Driver and Workers are same instance type:")
-  worker_nodes = current_cluster.num_workers
-  cores_per_node = int(current_cluster.cluster_cores/(worker_nodes+1))
-  worker_cores = cores_per_node
-  driver_cores = cores_per_node
+  total_cores = current_cluster.cluster_cores
+  cores_per_node = int(total_cores/(active_worker_nodes+1))
+  worker_cores = int(cores_per_node)
+  driver_cores = int(cores_per_node)
   
   setup_cmd += f"""num_cpus_worker_node={worker_cores},
   num_cpus_head_node={driver_cores},
@@ -282,11 +287,7 @@ ray.init(ignore_reinit_error=True)
 
 # STEP 4: Determine if Spark and Ray to share cluster resources
 if proportion_cluster_for_spark > 0.0:
-  print(" - Determine how many resources to give to Spark, then decrease the values of num_cpus_worker_node. Disabling Ray's usage of head node because Spark requires the driver node to orchestrate.")
-  import re
-
-  # Replace cpus per worker node for Spark proportion
-  setup_cmd = re.sub(r'^\s*num_cpus_worker_node=.*,$', f'  num_cpus_worker_node={int(worker_cores*(1-proportion_cluster_for_spark))},', setup_cmd, flags=re.MULTILINE)
+  print(" - Disabling Ray's usage of head node because Spark requires the driver node to orchestrate.")
 
   # Remove head node options 
   params_to_remove = ['num_gpus_head_node', 'num_cpus_head_node']
