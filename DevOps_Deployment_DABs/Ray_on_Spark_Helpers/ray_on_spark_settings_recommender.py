@@ -27,6 +27,8 @@ import re
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 def get_workspace_client() -> WorkspaceClient: 
     """
@@ -131,9 +133,20 @@ current_cluster = w.clusters.get(get_cluster_id())
 
 # COMMAND ----------
 
+def check_serverless(current_cluster):
+    """
+    Checks if the current cluster is Serverless. Raises a ValueError if so.
+    """
+    if getattr(current_cluster, "cluster_name", "") == "":
+        raise ValueError("it looks like you are running this on Serverless. Ray on Spark is not supported for Serverless. Please run this on a Classic Compute cluster instead. See docs: https://docs.databricks.com/aws/en/machine-learning/ray/#limitations")
 
-
-# COMMAND ----------
+def check_single_node(current_cluster):
+    """
+    Checks if the current cluster is a single-node cluster.
+    Raises a ValueError if the cluster is single-node, as Ray on Spark setup is intended for multi-node clusters.
+    """
+    if getattr(current_cluster, "is_single_node", False):
+        raise ValueError("This script is intended to determine setup for a multi-node cluster to use Ray on Spark. This is a single-node cluster. To use ray, just run ray.init(). See Ray docs for more info.")
 
 def check_security_mode(current_cluster):
     """
@@ -152,6 +165,8 @@ def check_security_mode(current_cluster):
     else:
         print(f"Clusters with data_security_mode '{data_security_mode_str}' can be used to create Ray on Spark clusters.")
 
+check_serverless(current_cluster=current_cluster)
+check_single_node(current_cluster=current_cluster)
 check_security_mode(current_cluster=current_cluster)
 
 # COMMAND ----------
@@ -183,92 +198,14 @@ check_runtime_version(current_cluster=current_cluster)
 
 # COMMAND ----------
 
-def check_single_node(current_cluster):
-  """
-  Checks if the current cluster is a single-node cluster.
-  Raises a ValueError if the cluster is single-node, as Ray on Spark setup is intended for multi-node clusters.
-  """
-  if getattr(current_cluster, "is_single_node", False):
-    raise ValueError("This script is intended to determine setup for a multi-node cluster to use Ray on Spark. This is a single-node cluster. To use ray, just run ray.init(). See Ray docs for more info.")
-
-check_single_node(current_cluster=current_cluster)
-
-# COMMAND ----------
-
-def check_gpu(current_cluster):
-    """
-    Checks if the current cluster is using GPU-enabled instance types based on the cloud provider and node type.
-    Returns True if GPUs are detected, otherwise False.
-    """
-    gpus = {
-        "gpu_instance_types": {
-            "aws": ["p5", "p4", "g6e", "g6", "g5", "g4dn", "p3"],
-            "azure": [
-                "Standard_NC40ads_H100_v5",
-                "Standard_NC80adis_H100_v5",
-                "Standard_NC24ads_A100_v4",
-                "Standard_NC48ads_A100_v4",
-                "Standard_NC96ads_A100_v4",
-                "Standard_ND96asr_v4",
-                "Standard_NV36ads_A10_v5",
-                "Standard_NV36adms_A10_v5",
-                "Standard_NV72ads_A10_v5",
-                "Standard_NC4as_T4_v3",
-                "Standard_NC8as_T4_v3",
-                "Standard_NC16as_T4_v3",
-                "Standard_NC64as_T4_v3",
-                "Standard_NC6s_v3",
-                "Standard_NC12s_v3",
-                "Standard_NC24s_v3",
-                "Standard_NC24rs_v3",
-            ],
-            "gcp": [
-                "a2-ultragpu-8g",
-                "a2-highgpu-1g",
-                "a2-highgpu-2g",
-                "a2-highgpu-4g",
-                "a2-megagpu-16g",
-                "g2-standard-8",
-            ],
-        }
-    }
-
-    if hasattr(current_cluster, "aws_attributes"):
-        current_cloud = "aws"
-    elif hasattr(current_cluster, "azure_attributes"):
-        current_cloud = "azure"
-    elif hasattr(current_cluster, "gcp_attributes"):
-        current_cloud = "gcp"
-    else:
-        current_cloud = None
-
-    has_gpu = False
-    if current_cloud and hasattr(current_cluster, "node_type_id"):
-        node_type = str(current_cluster.node_type_id).lower()
-        gpu_types = [t.lower() for t in gpus["gpu_instance_types"].get(current_cloud, [])]
-        for gpu_type in gpu_types:
-            if gpu_type in node_type:
-                has_gpu = True
-                # print("Using instances with GPUs, additional setup required.")
-                break
-
-    # else:
-      # print("CPU-only instances.")
-    return has_gpu
-
-check_gpu(current_cluster=current_cluster)
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-# TODO: Change to function input
-spark_share = 0.0
+# Set % (0-1) of cluster to be used for Spark
+proportion_cluster_for_spark = 0.0 # 0.25
 
 setup_cmd = """
 >>> Use setup command >>>
+import ray
+from ray.util.spark import setup_ray_cluster
+
 setup_ray_cluster(
 """
 
@@ -309,14 +246,15 @@ else:
   print(" - Homogenous cluster, Driver and Workers are same instance type:")
   worker_nodes = current_cluster.num_workers
   cores_per_node = int(current_cluster.cluster_cores/(worker_nodes+1))
+  worker_cores = cores_per_node
+  driver_cores = cores_per_node
   
-  setup_cmd += f"""num_cpus_worker_node={cores_per_node}
-  num_cpus_head_node={cores_per_node},
+  setup_cmd += f"""num_cpus_worker_node={worker_cores},
+  num_cpus_head_node={driver_cores},
   """
 
 
 # STEP 3: Determine if GPUs onboard
-# TODO: Update and test this
 try:
   provider = get_cloud_provider(current_cluster)
   gpus_list = get_gpu_data([provider])
@@ -328,30 +266,39 @@ try:
   num_gpus_head_node={driver_gpus_per_node},
   """
 except:
-  print(" - no GPUs detected... skipping set up for GPUs.")
+  print(" - No GPUs detected, setting to zero in setup command.")
+  setup_cmd += f"""num_gpus_worker_node=0,
+  num_gpus_head_node=0,
+  """
 
 setup_cmd += """head_node_options={
       'dashboard_port': 9999,
       'include_dashboard':True,
     }
 )
+
+ray.init(ignore_reinit_error=True)
 """
 
-# STEP 4: Determine if Spark Share is enabled
-if spark_share > 0.0:
+# STEP 4: Determine if Spark and Ray to share cluster resources
+if proportion_cluster_for_spark > 0.0:
   print(" - Determine how many resources to give to Spark, then decrease the values of num_cpus_worker_node. Disabling Ray's usage of head node because Spark requires the driver node to orchestrate.")
+  import re
 
+  # Replace cpus per worker node for Spark proportion
+  setup_cmd = re.sub(r'^\s*num_cpus_worker_node=.*,$', f'  num_cpus_worker_node={int(worker_cores*(1-proportion_cluster_for_spark))},', setup_cmd, flags=re.MULTILINE)
+
+  # Remove head node options 
   params_to_remove = ['num_gpus_head_node', 'num_cpus_head_node']
-  # Split, filter, and join the lines
   lines = setup_cmd.splitlines()
   filtered_lines = [line for line in lines if not any(line.strip().startswith(param) for param in params_to_remove)]
   setup_cmd = '\n'.join(filtered_lines)
 
+# Print final setup command
 print(setup_cmd)
-
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## End 
-# MAGIC Copy the `setup_ray_cluster()` command printed after running the previous cell.
+# MAGIC Copy the `setup_ray_cluster()` command printed after running the previous cell. You can use this as a starting point for setting up and tuning a Ray on Spark cluster.
