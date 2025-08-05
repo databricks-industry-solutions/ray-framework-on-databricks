@@ -220,23 +220,23 @@ if current_cluster.autoscale:
   print(" - Autoscaling cluster")
   min_workers = current_cluster.autoscale.min_workers
   max_workers = int(current_cluster.autoscale.max_workers*(1-proportion_cluster_for_spark))
-  active_worker_nodes = len(current_cluster.executors) 
-
-  setup_cmd += f"""  min_worker_nodes={min_workers},
+  
+  setup_cmd += f"""  min_worker_nodes={min(min_workers, max_workers)},
   max_worker_nodes={max_workers},
   """
 ## Autoscaling = FALSE
 else:
   print(" - Non-Autoscaling cluster")
-  active_worker_nodes = int(current_cluster.num_workers*(1-proportion_cluster_for_spark))
+  max_workers = int(current_cluster.num_workers*(1-proportion_cluster_for_spark))
 
-  setup_cmd += f"""  min_worker_nodes={active_worker_nodes},
-  max_worker_nodes={active_worker_nodes},
+  setup_cmd += f"""  min_worker_nodes={max_workers},
+  max_worker_nodes={max_workers},
   """
 
 
 # STEP 2: Determine if Driver and Worker nodes match (homogenous cluster)
 worker_driver_match = current_cluster.driver_node_type_id == current_cluster.node_type_id
+active_worker_nodes = len(current_cluster.executors) 
 ## Worker Driver Match = FALSE
 if not worker_driver_match:
   print(" - Heterogenous cluster, Driver and Workers are different instance types")
