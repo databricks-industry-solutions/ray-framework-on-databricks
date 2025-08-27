@@ -16,10 +16,10 @@
 # MAGIC
 # MAGIC Tested on:
 # MAGIC ```
-# MAGIC Databricks Machine Learning Runtime 15.4LTS
-# MAGIC databricks-feature-engineering-client==0.8.0
-# MAGIC mlflow=2.19.0
-# MAGIC ray==2.40.0
+# MAGIC Databricks Machine Learning Runtime 16.4LTS
+# MAGIC databricks-feature-engineering-client==0.12.1
+# MAGIC mlflow=3.3.2
+# MAGIC ray==2.49.0
 # MAGIC ```
 
 # COMMAND ----------
@@ -332,152 +332,6 @@ for key, value in best_trial.params.items():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Use native `MLFlow.spark.optuna` flavor: Create a shared storage for distributed optimization
-# MAGIC With `MlflowStorage`, the MLflow Tracking Server can serve as the storage backend. See documentation for [AWS](https://docs.databricks.com/aws/en/machine-learning/automl-hyperparam-tuning/optuna)|[Azure](https://learn.microsoft.com/en-us/azure/databricks/machine-learning/automl-hyperparam-tuning/optuna)|[GCP](https://docs.databricks.com/gcp/en/machine-learning/automl-hyperparam-tuning/optuna).
-
-# COMMAND ----------
-
-import mlflow
-from mlflow.optuna.storage import MlflowStorage
-
-
-# Grab experiment and model name
-experiment_name = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-try:
-  experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
-
-except:
-  with mlflow.start_run(run_name="dummy-run"):
-    # Dummy run to create notebook experiment if it doesn't exist
-    mlflow.end_run()
-  experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
-
-mlflow.set_experiment(experiment_name)
-print(f"Set experiment to: {experiment_name}")
-
-mlflow_storage = MlflowStorage(experiment_id=experiment_id)
-
-# COMMAND ----------
-
-import warnings
-import pandas as pd
-from mlflow.types.utils import _infer_schema
-from mlflow.exceptions import MlflowException
-from mlflow.models import Model
-from mlflow.pyfunc import PyFuncModel
-from mlflow import pyfunc
-
-
-def optuna_hpo_fn(n_trials: int, features: pd.DataFrame, labels: pd.Series, model_name: str, experiment_id: str) -> optuna.study.study.Study:
-
-    # Split data into train and test sets
-    X_train, X_test, Y_train, Y_test = train_test_split(features, labels, test_size=0.2, random_state=rng_seed)
-
-    # Kick distributed HPO as nested runs
-    objective_fn = ObjectiveOptuna(X_train, Y_train)
-    mlflow_optuna_study = MlflowSparkStudy(
-        sampler=optuna_sampler,
-        study_name="single_node_hpo_study",
-        storage=mlflow_storage,
-    )
-    mlflow_optuna_study._directions = ["maximize"]
-    mlflow_optuna_study.optimize(objective_fn, n_trials=n_trials, n_jobs=-1)
-
-    # Extract best trial info
-    best_model_params = optuna_study.best_params
-    best_model_params["random_state"] = rng_seed
-    classifier_type = best_model_params.pop('classifier')
-
-    # Reproduce best classifier
-    if classifier_type  == "LogisticRegression":
-        best_model = LogisticRegression(**best_model_params)
-    elif classifier_type == "RandomForestClassifier":
-        best_model = RandomForestClassifier(**best_model_params)
-    elif classifier_type == "LightGBM":
-        best_model = LGBMClassifier(force_row_wise=True, verbose=-1, **best_model_params)
-
-    # Enable automatic logging of input samples, metrics, parameters, and models
-    mlflow.sklearn.autolog(log_input_examples=True, log_models=False, silent=True)
-    
-    active_run = mlflow.active_run()
-    if not active_run:
-        active_run = client.search_runs(
-            experiment_ids=[experiment_id],
-            filter_string=f"tags.mlflow.runName = '{run_name}'",
-            order_by=["start_time DESC"],
-            max_results=1)[0]
-    
-    run_id = active_run.info.run_id
-
-    # Start mlflow run
-    with mlflow.start_run(run_id=run_id, experiment_id=experiment_id) as parent_run:
-
-        # Fit best model and log using FE client in parent run
-        model_pipeline = Pipeline(steps=[("preprocessor", objective_fn.preprocessor), ("classifier", best_model)])
-        model_pipeline.fit(X_train, Y_train)
-        
-        fe.log_model(
-            model=model_pipeline,
-            artifact_path="model",
-            flavor=mlflow.sklearn,
-            training_set=training_set,
-            registered_model_name=model_name
-        )
-
-        # Evaluate model and log into experiment
-        mlflow_model = Model()
-        pyfunc.add_to_model(mlflow_model, loader_module="mlflow.sklearn")
-        pyfunc_model = PyFuncModel(model_meta=mlflow_model, model_impl=model_pipeline)
-        
-        # Log metrics for the training set
-        training_eval_result = mlflow.evaluate(
-            model=pyfunc_model,
-            data=X_train.assign(**{str(label):Y_train}),
-            targets=label,
-            model_type="classifier",
-            evaluator_config = {"log_model_explainability": False,
-                                "metric_prefix": "training_" , "pos_label": ">50K" }
-        )
-
-        # Log metrics for the test set
-        test_eval_result = mlflow.evaluate(
-            model=pyfunc_model,
-            data=X_test.assign(**{str(label):Y_test}),
-            targets=label,
-            model_type="classifier",
-            evaluator_config = {"log_model_explainability": False,
-                                "metric_prefix": "test_" , "pos_label": ">50K" }
-        )
-
-        mlflow.end_run()
-        
-    return mlflow_optuna_study
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC #### Execute
-# MAGIC
-
-# COMMAND ----------
-
-# Invoke training function on driver node
-single_node_study = optuna_hpo_fn(
-  n_trials=n_trials,
-  features=X,
-  labels=Y,
-  model_name=f"{catalog}.{schema}.hpo_model_optuna_single_node",
-  experiment_id=experiment_id,
-)
-
-# COMMAND ----------
-
-# DBTITLE 1,Elapsed time excluding best model fitting, logging and evaluation
-print(f"Elapsed time for HPO on driver/single node for {n_trials} experiments: {single_node_study.trials[-1].datetime_complete - single_node_study.trials[0].datetime_start}")
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## 5. Scaling HPO with Ray Tune
 # MAGIC
 # MAGIC Ray Tune allows hyperparameter optimization through several key capabilities:
@@ -763,3 +617,7 @@ with mlflow.start_run(run_name ='ray_tune_native_mlflow_callback', experiment_id
 # DBTITLE 1,Elapsed time excluding best model fitting, logging and evaluation
 rt_trials_pdf = multinode_results.get_dataframe()
 print(f"Elapsed time for multinode HPO with ray tune for {n_trials} experiments:: {(rt_trials_pdf['timestamp'].iloc[-1] - rt_trials_pdf['timestamp'].iloc[0] + rt_trials_pdf['time_total_s'].iloc[-1])/60} min")
+
+# COMMAND ----------
+
+
