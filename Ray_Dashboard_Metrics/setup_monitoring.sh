@@ -96,7 +96,7 @@ org_role = Viewer
 provisioning = $BASE_DIR/ray/session_latest/metrics/grafana/provisioning
 EOL
 
-# PART 4: Get and start Prometheus and Grafana
+# PART 2: Get and start Prometheus and Grafana
 
 # Get Prometheus and Grafana
 sudo wget -q https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz -P ${BASE_DIR}/
