@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+###
+# Script Name: setup_monitoring.sh
+# Description: This script sets up Prometheus+Grafana metrics for use in the Ray dashboard exposed through the Databricks driver proxy.
+# Testing: This script has been validated on both AWS & Azure Databricks on DBRs: 15.4 ML LTS, 16.1 ML
+# Author: tj@databricks.com
+# Date: 2025-09-23
+# Version: 1.0
+###
+
 set -euo pipefail
 IFS=$'\n\t'
 cd "/"
