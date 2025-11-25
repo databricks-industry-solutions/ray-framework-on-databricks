@@ -1,0 +1,10 @@
+catalog: shm
+schema: forecast
+volume: m5
+eval_table: sdf_sales_train_evaluation
+final_table: final_cleaned_filtered
+experiment_name: /Users/scott.mckean@databricks.com/experiments/ray_tune
+restart_ray_each_run: true
+num_items: 600 # Max number of item time series to load, full dataset has 30490 which is overkill
+items_per_model: 100  # Make sure num_items and items_per_model are divisible
+max_concurrent_trials: 3 # total_concurrent_trials = num_models * max_concurrent_trials
