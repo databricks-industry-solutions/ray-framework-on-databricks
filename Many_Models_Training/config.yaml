@@ -1,6 +1,9 @@
 catalog: shm
 schema: forecast
 volume: m5
+secret_scope: shm
+kaggle_user_secret: kaggle_user
+kaggle_key_secret: kaggle_key
 eval_table: sdf_sales_train_evaluation
 final_table: final_cleaned_filtered
 experiment_name: /Users/scott.mckean@databricks.com/experiments/ray_tune
