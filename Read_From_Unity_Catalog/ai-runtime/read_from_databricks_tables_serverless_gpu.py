@@ -20,7 +20,7 @@
 # MAGIC ### Requirements
 # MAGIC * A running **SQL Warehouse** (serverless, pro, or classic).
 # MAGIC * `SELECT` on the target table, `USE CATALOG`, and `USE SCHEMA`.
-# MAGIC * Serverless GPU compute (single-node or multi-node).
+# MAGIC * Serverless GPU compute (single-node or multi-node), environment version **client.4.10** or later.
 # MAGIC
 # MAGIC ### Notebook overview
 # MAGIC | Cell | Purpose |

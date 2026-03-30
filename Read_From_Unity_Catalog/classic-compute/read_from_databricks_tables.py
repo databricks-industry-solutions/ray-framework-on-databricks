@@ -10,9 +10,10 @@
 # MAGIC 2. The warehouse executes the query and stages the result set.
 # MAGIC 3. Ray workers fetch result chunks in parallel over HTTP.
 # MAGIC
-# MAGIC Because the data path goes through the warehouse, **Unity Catalog automatically captures lineage** — every read appears in the table's Lineage tab, attributed to the warehouse and the token used.
+# MAGIC Because the data path goes through the warehouse, **Unity Catalog automatically captures lineage** — every read appears in the table’s Lineage tab, attributed to the warehouse and the token used.
 # MAGIC
 # MAGIC ### Requirements
+# MAGIC * Databricks Runtime **17.3 LTS** or later.
 # MAGIC * A running **SQL Warehouse** (serverless, pro, or classic).
 # MAGIC * `SELECT` on the target table, `USE CATALOG`, and `USE SCHEMA`.
 # MAGIC * `DATABRICKS_TOKEN` and `DATABRICKS_HOST` environment variables (set in cell 5 before `setup_ray_cluster` so Ray workers inherit them).

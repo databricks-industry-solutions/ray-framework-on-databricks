@@ -71,12 +71,11 @@ ray-data-read-examples/
 ## Prerequisites
 
 **Classic Compute:**
-- Databricks ML Runtime with `ray[all]==2.54.0`.
-- `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables set before `setup_ray_cluster()` so Ray workers inherit credentials.
+- Databricks Runtime **17.3 LTS** or later.
+- `ray[all]==2.54.0` installed via `%pip`.
 
 **AI Runtime (Serverless GPU):**
-- Databricks Serverless GPU compute.
+- Databricks Serverless GPU compute, environment version **client.4.10** or later.
 - `ray[all]==2.54.0` installed via `%pip`.
-- For multi-node: `serverless_gpu` package (pre-installed or via wheel).
 
 See each notebook's introduction cell for method-specific requirements.

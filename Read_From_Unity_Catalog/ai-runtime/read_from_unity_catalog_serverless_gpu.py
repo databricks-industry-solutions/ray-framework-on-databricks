@@ -18,7 +18,7 @@
 # MAGIC * `SELECT` on the target table, `USE CATALOG`, and `USE SCHEMA`.
 # MAGIC * The Unity Catalog metastore must have **external access enabled**.
 # MAGIC * `deltalake>=1.5.0` and `unitycatalog` Python packages.
-# MAGIC * Serverless GPU compute (single-node or multi-node).
+# MAGIC * Serverless GPU compute (single-node or multi-node), environment version **client.4.10** or later.
 # MAGIC
 # MAGIC > **Note on `deltalake` 1.5.0+:** The latest delta-rs release adds native support for [deletion vectors](https://docs.delta.io/latest/delta-deletion-vectors.html), making the end-to-end OSS read path — UC REST API → credential vending → delta-rs — fully seamless.
 # MAGIC

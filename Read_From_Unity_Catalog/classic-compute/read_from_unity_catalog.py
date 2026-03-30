@@ -6,6 +6,7 @@
 # MAGIC `ray.data.read_unity_catalog` leverages [Unity Catalog credential vending](https://docs.databricks.com/en/external-access/credential-vending.html) to issue short-lived, least-privilege cloud storage tokens — allowing Ray workers to read table data directly from S3/ADLS/GCS without routing through Spark.
 # MAGIC
 # MAGIC ### Requirements
+# MAGIC * Databricks Runtime **17.3 LTS** or later.
 # MAGIC * **`EXTERNAL USE SCHEMA`** must be granted on the target schema. Only the **catalog owner** can grant this privilege — it is *not* included in `ALL PRIVILEGES` and schema owners do not have it by default.
 # MAGIC * The requesting principal also needs `SELECT` on the table, `USE CATALOG`, and `USE SCHEMA`.
 # MAGIC * The Unity Catalog metastore must have **external access enabled** (metastore-level admin setting).
