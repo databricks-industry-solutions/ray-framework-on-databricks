@@ -17,7 +17,7 @@ As models grow in complexity and datasets grow in size, single-node training qui
 
 | Notebook | Compute | Description |
 | --- | --- | --- |
-| `sgc-ray-resnet18` | AI Runtime / Serverless GPU | Distributed PyTorch ResNet18 training on FashionMNIST using Ray Train and Ray Data on multi-node A10 GPUs with MLflow logging and UC model registration |
+| `01_sgc_ray_resnet18` | AI Runtime / Serverless GPU | Distributed PyTorch ResNet18 training on FashionMNIST using Ray Train and Ray Data on multi-node A10 GPUs with MLflow logging and UC model registration |
 
 ### XGBoost
 
