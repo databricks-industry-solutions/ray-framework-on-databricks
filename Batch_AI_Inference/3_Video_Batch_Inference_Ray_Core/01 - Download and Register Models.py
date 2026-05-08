@@ -12,15 +12,12 @@
 # COMMAND ----------
 
 # DBTITLE 1,Install required packages
-# vLLM is pinned to match notebook 02 so registration and inference cannot drift.
+# Minimal deps for VLM registration: transformers + torch + accelerate + mlflow.
+# vLLM is NOT installed here — it's a GPU-only dependency invoked from notebook 02.
 PIP_REQUIREMENTS = (
-    "vllm==0.8.2 "
-    "httpx==0.27.2 "
-    "torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 xformers==0.0.28.post3 accelerate "
+    "torch==2.5.1 torchvision==0.20.1 accelerate "
     "git+https://github.com/huggingface/transformers@f3f6c86582611976e72be054675e2bf0abb5f775 "
-    "mlflow==2.19.0 "
-    "git+https://github.com/stikkireddy/mlflow-extensions.git@v0.17.0 "
-    "qwen-vl-utils"
+    "mlflow==2.19.0"
 )
 %pip install {PIP_REQUIREMENTS}
 dbutils.library.restartPython()
@@ -98,9 +95,26 @@ signature = ModelSignature(inputs=input_schema, outputs=output_schema)
 
 # COMMAND ----------
 
+# Save model + processor to a local path so we can register via the path-form of
+# transformers.log_model. The dict-form triggers MLflow to internally call
+# pipeline(task="image-text-to-text", **dict), which fails for multi-modal Qwen-VL
+# because the unified processor isn't accepted in the dict. The path-form skips
+# in-memory pipeline validation entirely (see MLflow source: validate_serving_input
+# = not isinstance(transformers_model, str)).
+import shutil
+local_save_path = "/local_disk0/qwen_vlm_save"
+if os.path.exists(local_save_path):
+    shutil.rmtree(local_save_path)
+
+model.save_pretrained(local_save_path)
+processor.save_pretrained(local_save_path)
+print(f"Saved model + processor to {local_save_path}")
+
+# COMMAND ----------
+
 with mlflow.start_run(run_name=f"{MODEL_NAME}-register"):
     model_info = mlflow.transformers.log_model(
-        transformers_model={"model": model, "processor": processor},
+        transformers_model=local_save_path,
         artifact_path="qwen_vlm",
         task="image-text-to-text",
         signature=signature,

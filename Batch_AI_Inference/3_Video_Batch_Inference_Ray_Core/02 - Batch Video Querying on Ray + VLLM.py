@@ -21,7 +21,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -qU databricks-sdk numba==0.60.0 pydub ray vllm==0.8.2 ffmpeg-python git+https://github.com/huggingface/transformers.git@336dc69d63d56f232a183a3e7f52790429b871ef
+# MAGIC %pip install -qU databricks-sdk vllm==0.8.2 ffmpeg-python git+https://github.com/huggingface/transformers.git@336dc69d63d56f232a183a3e7f52790429b871ef
 # MAGIC
 # MAGIC dbutils.library.restartPython()
 
@@ -85,17 +85,12 @@ MAX_DURATION_SECONDS = int(dbutils.widgets.get("MAX_DURATION_SECONDS"))
 
 # COMMAND ----------
 
-context = ray.init(include_dashboard=True, dashboard_host="0.0.0.0", dashboard_port=9999)
-
-# COMMAND ----------
-
-def get_dashboard_url(spark, dbutils):
-    base_url = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
-    workspace_id = spark.conf.get("spark.databricks.clusterUsageTags.orgId")
-    cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId")
-    return f"{base_url}/driver-proxy/o/{workspace_id}/{cluster_id}/9999/"
-
-print(get_dashboard_url(spark, dbutils))
+# Dashboard disabled here to keep the pip install minimal — the runtime's Ray
+# version is what RayPatches.py is built against, so we don't pip-upgrade Ray.
+# To enable the Ray dashboard, install `ray[default]` pinned to the runtime's
+# version (check runtime release notes for the exact pin).
+context = ray.init(include_dashboard=False)
+print(f"Ray initialised: {context}")
 
 # COMMAND ----------
 
@@ -264,7 +259,12 @@ MODEL_KWARGS = {
     "tensor_parallel_size": 2,
 }
 
-ds = ray.data.from_spark(video_files_reference_df)
+# Bypass ray.data.from_spark — the Databricks RayPatches integration breaks against
+# the Ray version vLLM 0.8.2 brings in (BlockMetadata API drift). For our small
+# reference table (49 rows for the shoplifting subset) toPandas() is cheap; for
+# very large reference tables, pin Ray to the runtime's exact version instead.
+rows = video_files_reference_df.toPandas().to_dict("records")
+ds = ray.data.from_items(rows)
 
 ds = (
     ds.repartition(200)
