@@ -1,28 +1,23 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC This notebook performs batch video inference using a Vision Language Model (VLM) on CCTV footage. The goal is to detect behaviors such as shoplifting by leveraging Ray for distributed processing and VLLM for GPU-accelerated inference.
+# MAGIC # 02 — Batch Video Inference on Ray + vLLM
+# MAGIC
+# MAGIC Distributes a two-stage Ray pipeline across the cluster:
+# MAGIC 1. `ConvertToPrompt` (CPU) — extracts frames via ffmpeg, builds the Qwen-VL prompt.
+# MAGIC 2. `QwenVideoProcessing` (GPU) — loads the registered Qwen2.5-VL-32B weights into vLLM and runs inference.
+# MAGIC
+# MAGIC Output is written to a Delta table (default `video_inferences`) keyed by source video path.
+# MAGIC
+# MAGIC **Cluster:** GPU compute (e.g., `Standard_NC96ads_A100_v4` — 4×A100, 880 GB memory, 96 cores, 44 DBU/h).
+# MAGIC - **Runtime:** 16.1.x-scala2.12, Unity Catalog enabled.
+# MAGIC - **Spark configs:**
+# MAGIC   - `spark.databricks.pyspark.dataFrameChunk.enabled true`
+# MAGIC   - `spark.task.resource.gpu.amount 0`
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Prerequisites:
-# MAGIC
-# MAGIC ### Cluster Configurations: Summary
-# MAGIC - **Driver**: 880 GB Memory, 96 Cores
-# MAGIC - **Runtime**: 16.1.x-scala2.12
-# MAGIC - **Unity Catalog**
-# MAGIC - **Instance Type**: Standard_NC96ads_A100_v4
-# MAGIC - **Cost**: 44 DBU/h
-# MAGIC
-# MAGIC Set these `spark configs` on the cluster before starting it:
-# MAGIC
-# MAGIC * `spark.databricks.pyspark.dataFrameChunk.enabled true`
-# MAGIC * `spark.task.resource.gpu.amount 0`
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 🧪 Step 1: Install Required Packages
+# MAGIC ## Step 1 — Install required packages
 
 # COMMAND ----------
 
@@ -33,19 +28,17 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🧱 Step 2: Import Libraries & Configure Environment
+# MAGIC ## Step 2 — Imports
 
 # COMMAND ----------
 
-import os, time, ssl, warnings
-import numpy as np, pandas as pd, torch, ray
-import pyspark.sql.functions as F
-import pyspark.sql.types as T
+import os
+import warnings
 
+import pyspark.sql.functions as F
+import ray
 from mlflow.utils.databricks_utils import get_databricks_env_vars
-from ray.util.spark import setup_ray_cluster, shutdown_ray_cluster
-from transformers import pipeline
-from util import stage_registered_model, flatten_folder, run_on_every_node
+from util import stage_registered_model, flatten_folder
 from vllm import LLM, SamplingParams
 from vllm.assets.video import VideoAsset
 import ffmpeg
@@ -55,278 +48,273 @@ warnings.filterwarnings("ignore")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🔐 Step 3: Authenticate for MLflow + Define Constants
+# MAGIC ## Step 3 — MLflow auth + widgets
 
 # COMMAND ----------
 
-# Set Databricks auth for MLflow
+# Propagate Databricks auth into env vars so MLflow on Ray workers can reach UC.
 mlflow_dbrx_creds = get_databricks_env_vars("databricks")
-os.environ["DATABRICKS_HOST"] = mlflow_dbrx_creds['DATABRICKS_HOST']
-os.environ["DATABRICKS_TOKEN"] = mlflow_dbrx_creds['DATABRICKS_TOKEN']
+os.environ["DATABRICKS_HOST"] = mlflow_dbrx_creds["DATABRICKS_HOST"]
+os.environ["DATABRICKS_TOKEN"] = mlflow_dbrx_creds["DATABRICKS_TOKEN"]
 
-# Catalog and model registry references
-dbutils.widgets.text("CATALOG","main",label="CATALOG")
-dbutils.widgets.text("SCHEMA", "default",label="SCHEMA")
-dbutils.widgets.text("MODEL_NAME", "qwen2_5_vl-32b",label="MODEL_NAME")
-dbutils.widgets.text("MODEL_ALIAS", "Production",label="MODEL_ALIAS")
+dbutils.widgets.text("CATALOG", "main", label="CATALOG")
+dbutils.widgets.text("SCHEMA", "default", label="SCHEMA")
+dbutils.widgets.text("MODEL_NAME", "qwen2_5_vl-32b", label="MODEL_NAME")
+# Lowercase 'production' to match notebook 01 — MLflow aliases are case-sensitive.
+dbutils.widgets.text("MODEL_ALIAS", "production", label="MODEL_ALIAS")
+dbutils.widgets.text("INPUT_TABLE", "videos_file_reference", label="INPUT_TABLE")
+dbutils.widgets.text("OUTPUT_TABLE", "video_inferences", label="OUTPUT_TABLE")
+dbutils.widgets.text("CATEGORY_FILTER", "shoplifting", label="CATEGORY_FILTER")
+dbutils.widgets.text("MAX_DURATION_SECONDS", "1200", label="MAX_DURATION_SECONDS")
 
 CATALOG = dbutils.widgets.get("CATALOG")
 SCHEMA = dbutils.widgets.get("SCHEMA")
 MODEL_NAME = dbutils.widgets.get("MODEL_NAME")
 MODEL_ALIAS = dbutils.widgets.get("MODEL_ALIAS")
+INPUT_TABLE = dbutils.widgets.get("INPUT_TABLE")
+OUTPUT_TABLE = dbutils.widgets.get("OUTPUT_TABLE")
+CATEGORY_FILTER = dbutils.widgets.get("CATEGORY_FILTER")
+MAX_DURATION_SECONDS = int(dbutils.widgets.get("MAX_DURATION_SECONDS"))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## ⚙️ Step 4: Start Ray Cluster
+# MAGIC ## Step 4 — Start Ray cluster
 # MAGIC
-# MAGIC Some best practices for scaling up Ray clusters [here](https://docs.databricks.com/en/machine-learning/ray/scale-ray.html#scale-ray-clusters-on-databricks) :
-# MAGIC * `num_cpus_*` always leave 1 CPU core for spark so value should be <= max cores per worker - 1
+# MAGIC Single-node Ray on the driver — sufficient for a 4×A100 cluster. For multi-node scaling, swap `ray.init(...)` for `setup_ray_cluster(...)`. See https://docs.databricks.com/en/machine-learning/ray/scale-ray.html
 
 # COMMAND ----------
 
-# Start Ray with dashboard enabled
 context = ray.init(include_dashboard=True, dashboard_host="0.0.0.0", dashboard_port=9999)
 
 # COMMAND ----------
 
-# Optional: Get URL for Ray Dashboard
-def get_dashboard_url(spark, dbutils):  
-    base_url = 'https://' + spark.conf.get("spark.databricks.workspaceUrl")
+def get_dashboard_url(spark, dbutils):
+    base_url = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
     workspace_id = spark.conf.get("spark.databricks.clusterUsageTags.orgId")
     cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId")
     return f"{base_url}/driver-proxy/o/{workspace_id}/{cluster_id}/9999/"
 
-get_dashboard_url(spark, dbutils)
+print(get_dashboard_url(spark, dbutils))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🧠 Step 5: Define Inference Classes
+# MAGIC ## Step 5 — Define inference classes
 # MAGIC
-# MAGIC These custom Ray-callable classes handle video preprocessing and inference.
+# MAGIC Two Ray actor classes:
+# MAGIC - `ConvertToPrompt` — CPU stage. Probes the video for readability, samples `num_frames` frames, builds the Qwen-VL prompt.
+# MAGIC - `QwenVideoProcessing` — GPU stage. Stages the registered model weights into local disk, instantiates vLLM, runs inference per row.
 # MAGIC
-# MAGIC For VLLM, one parameter to configure would be:
-# MAGIC
-# MAGIC * `gpu_memory_utilization`: will define how many model instances will be created in a single GPU. This would depend on model's size and GPU VRAM in theory. 
+# MAGIC Key vLLM tuning knobs (see Step 7):
+# MAGIC - `tensor_parallel_size` — shards the 32B model across N GPUs.
+# MAGIC - `gpu_memory_utilization` — how aggressively to pack GPU VRAM (PagedAttention prevents fragmentation, so 0.95 is safe in practice).
+# MAGIC - `kv_cache_dtype="fp8"` — halves KV cache size, lets longer contexts fit.
 
 # COMMAND ----------
 
 class ConvertToPrompt:
-    """
-    Class to process video files and prepare them for the Qwen model.
-    """
-    
+    """CPU-stage Ray actor: probes the video, extracts N frames, builds the Qwen-VL prompt."""
+
     def __init__(self, query, num_frames=16):
         self.num_frames = num_frames
         self.query = query
 
     def transform(self, video_filename):
-        """
-        Extracts frames from a video file and returns as NumPy array.
-        """
+        """Returns a (frames, ok, error) tuple. On ffmpeg failure, returns (None, False, msg)."""
+        try:
+            ffmpeg.probe(video_filename)
+        except ffmpeg.Error as e:
+            return None, False, e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
 
-        probe = ffmpeg.probe(video_filename)
-        streams = [stream for stream in probe['streams'] if stream['codec_type'] == 'video']
-        if streams:
-            num_frames = int(float(streams[0]['r_frame_rate'].split('/')[0]) / float(streams[0]['r_frame_rate'].split('/')[1]))
-        else:
-            num_frames = self.num_frames
-        
-        video_data = VideoAsset(name=video_filename, num_frames=num_frames) 
-        return video_data.np_ndarrays
+        try:
+            video_data = VideoAsset(name=video_filename, num_frames=self.num_frames)
+            return video_data.np_ndarrays, True, ""
+        except Exception as e:
+            return None, False, f"VideoAsset failed: {e}"
 
     def __call__(self, row):
-        """
-        Converts video files into model-ready prompts.
-        """
-        row["frames"] = self.transform(row["file_path"])
-        # row["frames"] = f"file:///{row['file_path']}"
-        row["prompt"] = self.create_prompt(self.query) 
+        frames, ok, err = self.transform(row["file_path"])
+        row["frames"] = frames
+        row["ffmpeg_ok"] = ok
+        row["ffmpeg_error"] = err
+        row["prompt"] = self.create_prompt(self.query)
         return row
 
     def create_prompt(self, question):
-        """
-        Constructs a model prompt including video data.
-        """
-        return ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-                "<|im_start|>user\n<|vision_start|><|video_pad|><|vision_end|>"
-                f"{question}<|im_end|>\n"
-                "<|im_start|>assistant\n")
+        return (
+            "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+            "<|im_start|>user\n<|vision_start|><|video_pad|><|vision_end|>"
+            f"{question}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+
 
 class QwenVideoProcessing:
-    """
-    Class which will handle transcription of audio files (in batch fashion using VLLM)
-    """
-    def __init__(self, catalog:str, schema:str, model_name:str, model_kwargs:dict, model_alias:str = "Production"):
-        self.unverified_context = ssl._create_unverified_context()
+    """GPU-stage Ray actor: stages the UC-registered model into vLLM and runs inference."""
+
+    def __init__(self, catalog: str, schema: str, model_name: str, model_kwargs: dict, model_alias: str = "production"):
         print("Loading model from UC registry...")
 
         import mlflow
         mlflow.set_registry_uri("databricks-uc")
 
         model_weights_path = stage_registered_model(
-                            catalog = catalog, 
-                            schema = schema, 
-                            model_name = model_name, 
-                            alias = model_alias,
-                            local_base_path = "/local_disk0/models/",
-                            overwrite = False)
-        
+            catalog=catalog,
+            schema=schema,
+            model_name=model_name,
+            alias=model_alias,
+            local_base_path="/local_disk0/models/",
+            overwrite=False,
+        )
         flatten_folder(model_weights_path)
-        model_weights_path = str(model_weights_path)  #convert from Posit to string required by TF
-        self.QWEN_MODEL_PATH = model_weights_path
+        model_weights_path = str(model_weights_path)
 
-        # Create VLLM pipeline object
+        # Each actor uses tensor_parallel_size GPUs. On a 4×A100 cluster with TP=2,
+        # Ray can sustain 2 actors live in parallel. gpu_memory_utilization=0.95 packs
+        # each shard aggressively — safe because PagedAttention prevents fragmentation.
         self.video_inference_pipeline = LLM(
-                            model=model_weights_path,
-                            max_model_len=model_kwargs["max_model_len"],
-                            max_num_seqs=model_kwargs["max_num_seqs"],
-                            mm_processor_kwargs={
-                                "min_pixels": model_kwargs["min_pixels"],
-                                "max_pixels": model_kwargs["max_pixels"],
-                                "fps": model_kwargs["fps"],
-                                                    },
-                            disable_mm_preprocessor_cache=True,
-                            tensor_parallel_size=model_kwargs["tensor_parallel_size"],
-                            kv_cache_dtype="fp8",
-                            enforce_eager=True,
-                            limit_mm_per_prompt={"image": 1, "video": 1},
-                            gpu_memory_utilization = .95)
-        print("Model loaded...")
+            model=model_weights_path,
+            max_model_len=model_kwargs["max_model_len"],
+            max_num_seqs=model_kwargs["max_num_seqs"],
+            mm_processor_kwargs={
+                "min_pixels": model_kwargs["min_pixels"],
+                "max_pixels": model_kwargs["max_pixels"],
+                "fps": model_kwargs["fps"],
+            },
+            disable_mm_preprocessor_cache=True,
+            tensor_parallel_size=model_kwargs["tensor_parallel_size"],
+            kv_cache_dtype="fp8",
+            enforce_eager=True,
+            limit_mm_per_prompt={"image": 1, "video": 1},
+            gpu_memory_utilization=0.95,
+        )
+        print("Model loaded.")
 
-    def transform(self, row):
-        """
-        Converts frames and questions into Qwen-compatible input format.
-        """
-        prompts = [{
-            "prompt": row["prompt"],
-            "multi_modal_data": {"video": row["frames"]}
-        }]
-        return prompts
-
-
-    def __call__(self, row) -> str:
-        """
-        Call method applying all pipeline steps (in batch)
-        """
-
-        # Create a sampling params inference object
+    def __call__(self, row):
         sampling_params = SamplingParams(
-        temperature=0.1,
-        top_p=1,
-        repetition_penalty=1.05,
-        max_tokens=2500,
-        stop_token_ids=[],
+            temperature=0.1,
+            top_p=1,
+            repetition_penalty=1.05,
+            max_tokens=2500,
+            stop_token_ids=[],
         )
 
-        prompts = self.transform(row)
+        prompts = [{
+            "prompt": row["prompt"],
+            "multi_modal_data": {"video": row["frames"]},
+        }]
 
         outputs = self.video_inference_pipeline.generate(prompts, sampling_params)
-
-        row["generated_text"] = [output.outputs[0].text for output in outputs][0]
-
+        row["generated_text"] = outputs[0].outputs[0].text
         return row
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 📥 Step 6: Load Input Delta Table (Shoplifting Only)
+# MAGIC ## Step 6 — Load input reference table
 
 # COMMAND ----------
 
-TABLENAME = f"{CATALOG}.{SCHEMA}.videos_file_reference" 
+input_table_fqn = f"{CATALOG}.{SCHEMA}.{INPUT_TABLE}"
+
 video_files_reference_df = (
-    spark.table(TABLENAME)
+    spark.table(input_table_fqn)
     .withColumn("category", F.element_at(F.split("path", "/"), -2))
-    .filter((F.col("category") == "shoplifting") & (F.col("duration_seconds") <= 1200))
+    .filter((F.col("category") == CATEGORY_FILTER) & (F.col("duration_seconds") <= MAX_DURATION_SECONDS))
 )
 
 display(video_files_reference_df)
 
 # COMMAND ----------
 
-# DBTITLE 1,Estimate Input Size (for awareness)
+# DBTITLE 1,Estimate input size
 total_size = video_files_reference_df.agg(F.sum("size").alias("total_size")).collect()[0]["total_size"]
-print(f"{total_size / 1e9:.2f} GB")
+total_count = video_files_reference_df.count()
+if total_size is None:
+    print(f"No videos matched filters (category={CATEGORY_FILTER}, duration<={MAX_DURATION_SECONDS}s).")
+else:
+    print(f"{total_count} videos · {total_size / 1e9:.2f} GB matched.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🔄 Step 8: Build Ray Batch Inference Pipeline
+# MAGIC ## Step 7 — Build Ray batch inference pipeline
 # MAGIC
-# MAGIC using [`map`](https://docs.ray.io/en/latest/data/api/doc/ray.data.Dataset.map.html#ray.data.Dataset.map) and [`map_batches`](https://docs.ray.io/en/latest/data/api/doc/ray.data.Dataset.map_batches.html)
+# MAGIC Two `.map` stages with different resource specs:
+# MAGIC - **CPU stage** — `concurrency=(10, 24)`, `num_cpus=1`. Wide concurrency hides ffmpeg latency.
+# MAGIC - **GPU stage** — `concurrency=(2, 12)`, `num_gpus=2`. Each actor uses `tensor_parallel_size=2`, so on a 4×A100 cluster ~2 actors run in parallel.
 # MAGIC
-# MAGIC Some relevant parameters to define are:
-# MAGIC * `num_cpus`: for CPU intensive workloads (i.e. read the audio files) - defines how many ray-cores to use for individual tasks (default is `1 Ray-Core/CPU == 1 CPU Physical Core`). It can be defined as a fraction to oversubscribe a single physical core with multiple tasks
-# MAGIC
-# MAGIC * `num_gpus`: for GPU intensive workloads - defines how many (fractionnal) GPU(s) a single task/batch will use
-# MAGIC
-# MAGIC * `concurrency`: how many parallel tasks to run in parallel `Tuple(min,max)`
+# MAGIC A `.filter` between the two stages drops rows where ffmpeg failed (e.g., corrupt videos), so the GPU stage never sees `None` frames.
 
 # COMMAND ----------
 
-num_frames = 16
-
-query = """
+QUERY = """
 Analyze the surveillance video and determine if any shoplifting activity occurs. Focus on suspicious behaviors such as: hiding merchandise in clothing or bags, intentionally bypassing the checkout, switching price tags, or attempting to distract staff.  If shoplifting is detected, describe what happened, when it occurred (with timestamps), and which person was involved. Be specific and detailed in your explanation.
 """
 
-model_kwargs = {
-"max_model_len":32000,
-"max_num_seqs":5,
-"min_pixels" : 28 * 28,
-"max_pixels" : 1280 * 28 * 28,
-"fps" : 1,
-"tensor_parallel_size": 2
+NUM_FRAMES = 16
+
+MODEL_KWARGS = {
+    "max_model_len": 32000,
+    "max_num_seqs": 5,
+    "min_pixels": 28 * 28,
+    "max_pixels": 1280 * 28 * 28,
+    "fps": 1,
+    "tensor_parallel_size": 2,
 }
 
-# Convert to Ray dataset
 ds = ray.data.from_spark(video_files_reference_df)
 
-ds = ds.repartition(200)\
-        .map(
-            ConvertToPrompt, 
-            fn_constructor_kwargs={
-                  "num_frames": num_frames,
-                  "query": query
-                  },
-            concurrency=(10,24), # Can go up to total sum of cores
-            num_cpus=1,
-        )\
-        .map(
-              QwenVideoProcessing,
-              fn_constructor_kwargs={
-                  "catalog": CATALOG,
-                  "schema": SCHEMA,
-                  "model_name": MODEL_NAME,
-                  "model_kwargs": model_kwargs,
-                  "model_alias": MODEL_ALIAS
-                  },
-              concurrency=(2,12), 
-              num_gpus=2, # Individual batches will utilize  up to 60% of GPU's memory <==> 2 batches in parallel per GPU
-          )\
-        .drop_columns(["frames"])
+ds = (
+    ds.repartition(200)
+    .map(
+        ConvertToPrompt,
+        fn_constructor_kwargs={"num_frames": NUM_FRAMES, "query": QUERY},
+        concurrency=(10, 24),
+        num_cpus=1,
+    )
+    .filter(lambda row: row.get("ffmpeg_ok", False))
+    .map(
+        QwenVideoProcessing,
+        fn_constructor_kwargs={
+            "catalog": CATALOG,
+            "schema": SCHEMA,
+            "model_name": MODEL_NAME,
+            "model_kwargs": MODEL_KWARGS,
+            "model_alias": MODEL_ALIAS,
+        },
+        concurrency=(2, 12),
+        num_gpus=2,
+    )
+    .drop_columns(["frames"])
+)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 💾 Step 9: Save [Results](url) to Delta Table
+# MAGIC ## Step 8 — Configure ray-uc-volumes-fuse temp dir + write Delta
 
 # COMMAND ----------
 
-# Temporary directory for ray-uc-volumes-fuse (to write to Delta natively)
-VOLUME = "temp"
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME}")
+# ray-uc-volumes-fuse needs a UC Volume path to stage parquet shards before the
+# Delta write. We isolate it in a dedicated volume so it never collides with
+# raw video bytes or output tables.
+TEMP_VOLUME = "ray_fuse_temp"
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{TEMP_VOLUME}")
 
-tmp_dir_fs = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}/tempDoc"
+tmp_dir_fs = f"/Volumes/{CATALOG}/{SCHEMA}/{TEMP_VOLUME}/tmp_inference"
 dbutils.fs.mkdirs(tmp_dir_fs)
 os.environ["RAY_UC_VOLUMES_FUSE_TEMP_DIR"] = tmp_dir_fs
 
 # COMMAND ----------
 
+output_table_fqn = f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}"
+
 ds.write_databricks_table(
-  f"{CATALOG}.{SCHEMA}.shoplifting",
-  mode = "overwrite", #append/merge
-  mergeSchema = True
+    output_table_fqn,
+    mode="overwrite",
+    mergeSchema=True,
 )
+
+print(f"Wrote inferences to {output_table_fqn}.")
