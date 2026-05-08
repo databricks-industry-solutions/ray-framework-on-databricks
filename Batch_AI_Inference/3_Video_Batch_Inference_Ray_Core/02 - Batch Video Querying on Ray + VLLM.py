@@ -259,10 +259,14 @@ MODEL_KWARGS = {
     "tensor_parallel_size": 2,
 }
 
-# Bypass ray.data.from_spark — the Databricks RayPatches integration breaks against
-# the Ray version vLLM 0.8.2 brings in (BlockMetadata API drift). For our small
-# reference table (49 rows for the shoplifting subset) toPandas() is cheap; for
-# very large reference tables, pin Ray to the runtime's exact version instead.
+# Production target — direct Spark→Ray dataset:
+#     ds = ray.data.from_spark(video_files_reference_df)
+#
+# Current workaround: vLLM 0.8.2 transitively pulls in a Ray version that
+# conflicts with the runtime's dbruntime/RayPatches.py (BlockMetadata API
+# drift), breaking ray.data.from_spark. For reference-table-sized inputs,
+# converting via Pandas is a cheap bypass. For very large inputs, pin Ray to
+# the runtime's exact version and use from_spark.
 rows = video_files_reference_df.toPandas().to_dict("records")
 ds = ray.data.from_items(rows)
 

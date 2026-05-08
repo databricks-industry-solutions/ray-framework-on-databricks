@@ -126,6 +126,14 @@ with mlflow.start_run(run_name=f"{MODEL_NAME}-register"):
 # DBTITLE 1,Set @production alias on the registered model
 # Lowercase 'production' — MLflow alias lookups are case-sensitive; notebook 02 reads
 # the same casing.
+#
+# Sleep before set_registered_model_alias to handle UC eventual consistency on
+# freshly registered model versions: without this, the alias write occasionally
+# lands before the version is queryable, leaving the model with no alias visible
+# to downstream readers.
+import time
+time.sleep(5)
+
 client.set_registered_model_alias(
     name=f"{CATALOG}.{SCHEMA}.{MODEL_NAME}",
     version=model_info.registered_model_version,
