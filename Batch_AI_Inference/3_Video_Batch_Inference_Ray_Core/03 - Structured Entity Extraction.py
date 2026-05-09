@@ -41,7 +41,51 @@ output_fqn = f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}"
 
 # COMMAND ----------
 
-# DBTITLE 1,Structure prose into Delta rows
+# DBTITLE 1,Structure prose into Delta rows (multi-class assessment)
+# Two improvements over the original schema:
+#   1. assessment is a 5-level enum, not a binary boolean. Recovers VLM prose
+#      that says "suspected" / "appears to be" / "likely" — these were being
+#      classified as incident_confirmed=false in the binary version.
+#   2. schema_of_json is replaced with explicit struct DDL so column types are
+#      correct (BOOLEAN / DOUBLE / ARRAY<STRUCT<...>>) instead of all STRING.
+RESULT_STRUCT = (
+    "STRUCT<"
+    "timestamp:STRING, "
+    "time_range:STRING, "
+    "location:STRING, "
+    "camera_view:STRING, "
+    "suspects:ARRAY<STRUCT<"
+    "person_id:STRING, appearance:STRING, actions:ARRAY<STRING>, "
+    "item_taken:STRING, concealment_method:STRING, exit_behavior:STRING"
+    ">>, "
+    "assessment:STRING, "
+    "confidence:DOUBLE, "
+    "witnesses_or_staff_present:BOOLEAN, "
+    "response_observed:STRING, "
+    "notable_behaviors:ARRAY<STRING>, "
+    "video_quality_notes:STRING, "
+    "contextual_notes:STRING"
+    ">"
+)
+
+INSTRUCTION = (
+    "You are a loss-prevention analyst classifying a CCTV-footage analysis. "
+    "Read the description below and extract structured incident metadata. "
+    "Use this scale for the assessment field: "
+    "CONFIRMED = analyst explicitly states shoplifting occurred with clear evidence "
+    "(e.g. concealment shown, exit without payment). "
+    "LIKELY = analyst describes suspicious behaviour consistent with shoplifting but "
+    "stops short of formal confirmation (uses words like suspected, appears to be, "
+    "likely). "
+    "POSSIBLE = a behaviour that could be suspicious but is also consistent with "
+    "normal customer behaviour. "
+    "NORMAL = analyst describes normal customer behaviour with no theft indicators. "
+    "INSUFFICIENT_EVIDENCE = description too sparse, ambiguous, or video quality too "
+    "poor to make any assessment. "
+    "Confidence is 0.0-1.0 reflecting the analyst certainty in their description. "
+    "Description: "
+)
+
 sql = f"""
 CREATE OR REPLACE TABLE {output_fqn} AS
 SELECT
@@ -51,7 +95,8 @@ SELECT
   parsed_result.location AS location,
   parsed_result.camera_view AS camera_view,
   parsed_result.suspects AS suspects,
-  parsed_result.incident_confirmed AS incident_confirmed,
+  parsed_result.assessment AS assessment,
+  parsed_result.confidence AS confidence,
   parsed_result.witnesses_or_staff_present AS witnesses_or_staff_present,
   parsed_result.response_observed AS response_observed,
   parsed_result.notable_behaviors AS notable_behaviors,
@@ -62,10 +107,7 @@ FROM (
     from_json(
       ai_query(
         '{LLM_ENDPOINT}',
-        CONCAT(
-          "Using the following description of some CCTV in a store, please extract the relevant information related to the incident as metadata: ",
-          generated_text
-        ),
+        CONCAT('{INSTRUCTION}', generated_text),
         responseFormat => '{{
           "type": "json_schema",
           "json_schema": {{
@@ -95,7 +137,12 @@ FROM (
                     }}
                   }}
                 }},
-                "incident_confirmed": {{ "type": "boolean", "description": "True if the video clearly shows shoplifting behavior" }},
+                "assessment": {{
+                  "type": "string",
+                  "enum": ["CONFIRMED", "LIKELY", "POSSIBLE", "NORMAL", "INSUFFICIENT_EVIDENCE"],
+                  "description": "Multi-class incident assessment level"
+                }},
+                "confidence": {{ "type": "number", "minimum": 0, "maximum": 1, "description": "Analyst certainty (0.0 to 1.0)" }},
                 "witnesses_or_staff_present": {{ "type": "boolean", "description": "True if other people (e.g., staff or customers) witnessed the event" }},
                 "response_observed": {{ "type": "string", "description": "Any staff/security reaction captured in the footage" }},
                 "notable_behaviors": {{
@@ -111,19 +158,7 @@ FROM (
           }}
         }}'
       ),
-      schema_of_json('{{
-        "timestamp": "string",
-        "time_range": "string",
-        "location": "string",
-        "camera_view": "string",
-        "suspects": "array<struct<person_id:string,appearance:string,actions:array<string>,item_taken:string,concealment_method:string,exit_behavior:string>>",
-        "incident_confirmed": "boolean",
-        "witnesses_or_staff_present": "boolean",
-        "response_observed": "string",
-        "notable_behaviors": "array<string>",
-        "video_quality_notes": "string",
-        "contextual_notes": "string"
-      }}')
+      '{RESULT_STRUCT}'
     ) AS parsed_result
   FROM {input_fqn}
 )
@@ -136,3 +171,79 @@ print(f"Wrote structured events to {output_fqn}.")
 
 # DBTITLE 1,Preview structured output
 display(spark.table(output_fqn).limit(20))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Slide 9 — Trimmed schema reference (for talk screenshot)
+# MAGIC
+# MAGIC The full JSON schema above has 12 fields. For the DAIS 2026 talk slide 9 we want a
+# MAGIC version that fits cleanly on a Card-Left layout at DM Mono ~14pt — about 18 lines of
+# MAGIC SQL. The block below is the abbreviated visual reference. It is **not runnable** (the
+# MAGIC `…` placeholders aren't valid JSON); it exists purely as a screenshot source.
+# MAGIC
+# MAGIC The production version that actually runs is the cell above. Use this one only for
+# MAGIC the slide capture — dark IDE theme, crop tight to the SQL block.
+# MAGIC
+# MAGIC ```sql
+# MAGIC SELECT
+# MAGIC   parsed.timestamp,
+# MAGIC   parsed.location,
+# MAGIC   parsed.incident_confirmed,
+# MAGIC   parsed.suspects
+# MAGIC FROM (
+# MAGIC   SELECT
+# MAGIC     from_json(
+# MAGIC       ai_query(
+# MAGIC         'databricks-meta-llama-3-3-70b-instruct',
+# MAGIC         CONCAT('Extract incident metadata from: ', generated_text),
+# MAGIC         responseFormat => '{
+# MAGIC           "type": "json_schema",
+# MAGIC           "json_schema": {
+# MAGIC             "name": "shoplifting_incident_metadata",
+# MAGIC             "schema": {
+# MAGIC               "type": "object",
+# MAGIC               "properties": {
+# MAGIC                 "timestamp":          { "type": "string" },
+# MAGIC                 "location":           { "type": "string" },
+# MAGIC                 "incident_confirmed": { "type": "boolean" },
+# MAGIC                 "suspects":           { "type": "array", "items": { ... } }
+# MAGIC                 // ... 8 more fields in the full schema ...
+# MAGIC               }
+# MAGIC             }
+# MAGIC           }
+# MAGIC         }'
+# MAGIC       ),
+# MAGIC       'STRUCT<...>'
+# MAGIC     ) AS parsed
+# MAGIC   FROM samantha_wise.dais_2026.video_inferences_summit
+# MAGIC )
+# MAGIC ```
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Slide 9 — Live demo query (run this on stage)
+# MAGIC
+# MAGIC Returns 5 rows of structured incident metadata from the events table for the
+# MAGIC slide-9 live moment. Targets the same schema as the production cell above.
+# MAGIC Run from the Databricks SQL editor (warehouse `Shared Endpoint`) for the demo.
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT
+# MAGIC   element_at(split(path, '/'), -1)  AS filename,
+# MAGIC   assessment,
+# MAGIC   confidence,
+# MAGIC   location,
+# MAGIC   time_range,
+# MAGIC   suspects[0].person_id            AS person,
+# MAGIC   suspects[0].item_taken           AS item_taken,
+# MAGIC   suspects[0].concealment_method   AS concealment
+# MAGIC FROM samantha_wise.dais_2026.video_events_summit
+# MAGIC WHERE assessment IN ('CONFIRMED', 'LIKELY')
+# MAGIC   AND location IS NOT NULL AND location != ''
+# MAGIC   AND size(suspects) > 0
+# MAGIC ORDER BY assessment, confidence DESC
+# MAGIC LIMIT 5;
