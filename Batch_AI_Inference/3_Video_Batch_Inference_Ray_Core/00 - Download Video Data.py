@@ -15,7 +15,14 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Install Required Packages
+# DBTITLE 1,Install ffmpeg system binary
+# MAGIC %sh
+# MAGIC apt-get update -qq && apt-get install -y -qq ffmpeg
+# MAGIC ffprobe -version | head -1
+
+# COMMAND ----------
+
+# DBTITLE 1,Install required Python packages
 # MAGIC %pip install ffmpeg-python kaggle
 # MAGIC dbutils.library.restartPython()
 
@@ -77,25 +84,116 @@ except Exception:
 
 # MAGIC %md
 # MAGIC ### Download the dataset
-# MAGIC Public Kaggle dataset: [Real-Time Anomaly Detection in CCTV Surveillance](https://www.kaggle.com/datasets/webadvisor/real-time-anomaly-detection-in-cctv-surveillance/data). Download + unzip typically ~20 minutes on standard cluster networking.
+# MAGIC Public Kaggle dataset: [Real-Time Anomaly Detection in CCTV Surveillance](https://www.kaggle.com/datasets/webadvisor/real-time-anomaly-detection-in-cctv-surveillance/data).
+# MAGIC
+# MAGIC Set `CATEGORY_FILTER` to a specific anomaly category (e.g. `shoplifting`, `burglary`, `arson`)
+# MAGIC to download only that subfolder via per-file requests. Set to `ALL` to download the full
+# MAGIC ~95 GB dataset. Single-category downloads take ~10 min and ~2 GB; full takes ~30 min and ~95 GB.
+
+# COMMAND ----------
+
+dbutils.widgets.text("CATEGORY_FILTER", "shoplifting", label="CATEGORY_FILTER")
+CATEGORY_FILTER = dbutils.widgets.get("CATEGORY_FILTER")
+print(f"Downloading category: {CATEGORY_FILTER}")
 
 # COMMAND ----------
 
 # DBTITLE 1,Download & extract via kaggle CLI
 import subprocess
 
-result = subprocess.run(
-    [
-        "kaggle", "datasets", "download",
-        "-d", "webadvisor/real-time-anomaly-detection-in-cctv-surveillance",
-        "-p", video_path,
-        "--unzip",
-    ],
-    capture_output=True, text=True,
-)
-print(result.stdout)
-if result.returncode != 0:
-    raise RuntimeError(f"Kaggle download failed: {result.stderr}")
+DATASET = "webadvisor/real-time-anomaly-detection-in-cctv-surveillance"
+
+if CATEGORY_FILTER.upper() == "ALL":
+    # Full dataset download (~95 GB).
+    result = subprocess.run(
+        ["kaggle", "datasets", "download", "-d", DATASET, "-p", video_path, "--unzip"],
+        capture_output=True, text=True,
+    )
+    print(result.stdout)
+    if result.returncode != 0:
+        raise RuntimeError(f"Kaggle download failed: {result.stderr}")
+else:
+    # Single-category download. The Kaggle list_files API has pagination quirks for
+    # large datasets (only returns the first page), so we enumerate by filename
+    # pattern instead. Each file is downloaded directly via `kaggle datasets download
+    # -f`. 404s for non-existent file numbers are silently skipped.
+    #
+    # The dataset's known categories: shoplifting (001..055 with gaps), burglary,
+    # abuse, arson, assault, robbery, stealing, vandalism, etc. Each category folder
+    # uses the same `<Category>NNN_x264.mp4` naming pattern.
+    capitalised = CATEGORY_FILTER[0].upper() + CATEGORY_FILTER[1:]
+    candidate_paths = [
+        f"data/{CATEGORY_FILTER}/{capitalised}{i:03d}_x264.mp4"
+        for i in range(1, 200)  # generous upper bound; non-existent files 404 quietly
+    ]
+    print(f"Attempting download of up to {len(candidate_paths)} files from "
+          f"data/{CATEGORY_FILTER}/...")
+
+    success_count = 0
+    fail_count = 0
+    for i, fname in enumerate(candidate_paths, 1):
+        proc = subprocess.run(
+            ["kaggle", "datasets", "download", "-d", DATASET,
+             "-f", fname, "-p", video_path, "--unzip", "--force"],
+            capture_output=True, text=True,
+        )
+        # Kaggle CLI returns non-zero for 404, but we don't know in advance which
+        # numbers exist. Treat "Not Found" / "404" stderr as a silent skip.
+        stderr_lower = (proc.stderr or "").lower()
+        if proc.returncode == 0:
+            success_count += 1
+            if success_count == 1 or success_count % 10 == 0:
+                print(f"  [{success_count} downloaded] last: {fname}")
+        elif "404" in stderr_lower or "not found" in stderr_lower:
+            # File doesn't exist at that number — keep going.
+            fail_count += 1
+        else:
+            fail_count += 1
+            print(f"  WARN: {fname}: {proc.stderr.strip()[:200]}")
+
+        # Early termination: if we've had 30 consecutive failures after at least
+        # one success, assume we've passed the end of the numbering.
+        if success_count > 0 and i - success_count > 30:
+            print(f"  Stopping early after {i} attempts ({success_count} downloaded)")
+            break
+
+    print(f"Downloaded {success_count} files to {video_path}")
+    if success_count == 0:
+        raise RuntimeError(
+            f"No files downloaded for category '{CATEGORY_FILTER}'. Check the "
+            f"category spelling. Common categories: shoplifting, burglary, abuse, "
+            f"arson, assault, robbery, stealing, vandalism. "
+            f"Set CATEGORY_FILTER=ALL for the full dataset."
+        )
+
+    # Single-file downloads from Kaggle CLI come back as .mp4.zip even with --unzip
+    # AND are placed flat at the top level instead of in data/<category>/. Reorganize
+    # so the layout matches what notebook 02 expects: data/<category>/*.mp4
+    import os, zipfile, shutil
+    target_dir = f"{video_path}/data/{CATEGORY_FILTER}"
+    os.makedirs(target_dir, exist_ok=True)
+
+    # Step 1: unzip every .zip in video_path
+    for fname in os.listdir(video_path):
+        if fname.endswith(".zip"):
+            zpath = os.path.join(video_path, fname)
+            try:
+                with zipfile.ZipFile(zpath, "r") as z:
+                    z.extractall(video_path)
+                os.remove(zpath)
+            except zipfile.BadZipFile:
+                print(f"  WARN: bad zip {fname}")
+
+    # Step 2: move all .mp4 files at top level into data/<category>/
+    relocated = 0
+    for fname in os.listdir(video_path):
+        if fname.endswith(".mp4"):
+            shutil.move(
+                os.path.join(video_path, fname),
+                os.path.join(target_dir, fname),
+            )
+            relocated += 1
+    print(f"Reorganized {relocated} .mp4 files into {target_dir}")
 
 # COMMAND ----------
 
