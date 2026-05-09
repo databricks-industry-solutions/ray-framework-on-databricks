@@ -169,6 +169,58 @@ print(f"Wrote structured events to {output_fqn}.")
 
 # COMMAND ----------
 
+# DBTITLE 1,Retry pass on rows with NULL assessment
+# AI Functions occasionally returns null for the strict-schema response — even when
+# the underlying prose clearly contains shoplifting evidence. The strict
+# responseFormat may be rejecting borderline output, or token budget may be
+# truncating the structured response.
+#
+# Fall back to a much simpler classification call (single-word output, no schema)
+# for any row whose assessment ended up NULL on the first pass. This is a
+# production pattern: strict structured output as the primary path, simple-output
+# fallback for the long tail.
+
+retry_sql = f"""
+MERGE INTO {output_fqn} t
+USING (
+  SELECT
+    path,
+    upper(trim(
+      ai_query(
+        '{LLM_ENDPOINT}',
+        CONCAT(
+          'You are a loss-prevention analyst. Read this CCTV-footage analysis and ',
+          'classify it as exactly one of: CONFIRMED, LIKELY, POSSIBLE, NORMAL, ',
+          'INSUFFICIENT_EVIDENCE. Reply with just the single word, no explanation. ',
+          'Description: ',
+          generated_text
+        )
+      )
+    )) AS retry_assessment
+  FROM {output_fqn}
+  WHERE assessment IS NULL OR assessment = ''
+) s
+ON t.path = s.path
+WHEN MATCHED AND s.retry_assessment IN ('CONFIRMED','LIKELY','POSSIBLE','NORMAL','INSUFFICIENT_EVIDENCE')
+THEN UPDATE SET t.assessment = s.retry_assessment
+"""
+
+null_count_before = spark.sql(
+    f"SELECT count(*) FROM {output_fqn} WHERE assessment IS NULL OR assessment = ''"
+).collect()[0][0]
+
+if null_count_before > 0:
+    print(f"Retrying {null_count_before} rows with NULL assessment...")
+    spark.sql(retry_sql)
+    null_count_after = spark.sql(
+        f"SELECT count(*) FROM {output_fqn} WHERE assessment IS NULL OR assessment = ''"
+    ).collect()[0][0]
+    print(f"Retry recovered {null_count_before - null_count_after} of {null_count_before} rows.")
+else:
+    print("No NULL assessments to retry.")
+
+# COMMAND ----------
+
 # DBTITLE 1,Preview structured output
 display(spark.table(output_fqn).limit(20))
 
