@@ -239,16 +239,16 @@ display(spark.table(output_fqn).limit(20))
 # MAGIC
 # MAGIC ```sql
 # MAGIC SELECT
-# MAGIC   parsed.timestamp,
+# MAGIC   parsed.assessment,
+# MAGIC   parsed.confidence,
 # MAGIC   parsed.location,
-# MAGIC   parsed.incident_confirmed,
 # MAGIC   parsed.suspects
 # MAGIC FROM (
 # MAGIC   SELECT
 # MAGIC     from_json(
 # MAGIC       ai_query(
 # MAGIC         'databricks-meta-llama-3-3-70b-instruct',
-# MAGIC         CONCAT('Extract incident metadata from: ', generated_text),
+# MAGIC         CONCAT('Classify CCTV-footage analysis: ', generated_text),
 # MAGIC         responseFormat => '{
 # MAGIC           "type": "json_schema",
 # MAGIC           "json_schema": {
@@ -256,17 +256,18 @@ display(spark.table(output_fqn).limit(20))
 # MAGIC             "schema": {
 # MAGIC               "type": "object",
 # MAGIC               "properties": {
-# MAGIC                 "timestamp":          { "type": "string" },
-# MAGIC                 "location":           { "type": "string" },
-# MAGIC                 "incident_confirmed": { "type": "boolean" },
-# MAGIC                 "suspects":           { "type": "array", "items": { ... } }
+# MAGIC                 "assessment": { "type": "string",
+# MAGIC                   "enum": ["CONFIRMED","LIKELY","POSSIBLE","NORMAL","INSUFFICIENT_EVIDENCE"] },
+# MAGIC                 "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+# MAGIC                 "location":   { "type": "string" },
+# MAGIC                 "suspects":   { "type": "array", "items": { ... } }
 # MAGIC                 // ... 8 more fields in the full schema ...
 # MAGIC               }
 # MAGIC             }
 # MAGIC           }
 # MAGIC         }'
 # MAGIC       ),
-# MAGIC       'STRUCT<...>'
+# MAGIC       'STRUCT<assessment:STRING, confidence:DOUBLE, ...>'
 # MAGIC     ) AS parsed
 # MAGIC   FROM samantha_wise.dais_2026.video_inferences_summit
 # MAGIC )
