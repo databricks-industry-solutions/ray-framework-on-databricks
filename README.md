@@ -73,6 +73,7 @@ Get started here: [Ray Dashboard Metrics](Ray_Dashboard_Metrics/README.md)
 - <amine.elhelou@databricks.com>
 - <puneet.jain@databricks.com>
 - <samantha.wise@databricks.com>
+- <jon.cheung@databricks.com>
 
 
 ## Project support 
