@@ -42,11 +42,13 @@ output_fqn = f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}"
 # COMMAND ----------
 
 # DBTITLE 1,Structure prose into Delta rows (multi-class assessment)
-# Two improvements over the original schema:
+# Three improvements over the original schema:
 #   1. assessment is a 5-level enum, not a binary boolean. Recovers VLM prose
 #      that says "suspected" / "appears to be" / "likely" — these were being
 #      classified as incident_confirmed=false in the binary version.
-#   2. schema_of_json is replaced with explicit struct DDL so column types are
+#   2. Every field is listed in "required" and "strict" sits on json_schema (not inside schema);
+#      without both, the model silently omitted location/time_range/confidence on every row.
+#   3. schema_of_json is replaced with explicit struct DDL so column types are
 #      correct (BOOLEAN / DOUBLE / ARRAY<STRUCT<...>>) instead of all STRING.
 RESULT_STRUCT = (
     "STRUCT<"
@@ -115,7 +117,7 @@ FROM (
             "schema": {{
               "type": "object",
               "properties": {{
-                "timestamp": {{ "type": "string", "format": "date-time" }},
+                "timestamp": {{ "type": "string", "description": "On-screen recording date/time if visible, else empty string" }},
                 "time_range": {{ "type": "string", "description": "Time range in the video when the incident occurs (e.g., 03:12 - 03:48)" }},
                 "location": {{ "type": "string", "description": "General store area (e.g., cosmetics aisle, electronics section)" }},
                 "camera_view": {{ "type": "string", "description": "Camera perspective or label if visible (e.g., CAM3, front entrance)" }},
@@ -134,7 +136,9 @@ FROM (
                       "item_taken": {{ "type": "string", "description": "Description of the item suspected to be stolen (if identifiable)" }},
                       "concealment_method": {{ "type": "string", "description": "How the item was hidden (e.g., in bag, under jacket)" }},
                       "exit_behavior": {{ "type": "string", "description": "How the suspect exited (e.g., ran out, walked past checkout)" }}
-                    }}
+                    }},
+                    "required": ["person_id", "appearance", "actions", "item_taken", "concealment_method", "exit_behavior"],
+                    "additionalProperties": false
                   }}
                 }},
                 "assessment": {{
@@ -153,8 +157,10 @@ FROM (
                 "video_quality_notes": {{ "type": "string", "description": "Notes on visibility, resolution, obstructions, or clarity" }},
                 "contextual_notes": {{ "type": "string", "description": "Other useful context (e.g., group coordination, distraction tactics, time of day)" }}
               }},
-              "strict": true
-            }}
+              "required": ["timestamp", "time_range", "location", "camera_view", "suspects", "assessment", "confidence", "witnesses_or_staff_present", "response_observed", "notable_behaviors", "video_quality_notes", "contextual_notes"],
+              "additionalProperties": false
+            }},
+            "strict": true
           }}
         }}'
       ),
@@ -280,23 +286,25 @@ display(spark.table(output_fqn).limit(20))
 # MAGIC
 # MAGIC Returns 5 rows of structured incident metadata from the events table for the
 # MAGIC slide-9 live moment. Targets the same schema as the production cell above.
-# MAGIC Run from the Databricks SQL editor (warehouse `Shared Endpoint`) for the demo.
+# MAGIC Reads the table set by the widgets. To run it in the SQL editor instead, replace `{output_fqn}` with `<catalog>.<schema>.video_events`.
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC SELECT
-# MAGIC   element_at(split(path, '/'), -1)  AS filename,
-# MAGIC   assessment,
-# MAGIC   confidence,
-# MAGIC   location,
-# MAGIC   time_range,
-# MAGIC   suspects[0].person_id            AS person,
-# MAGIC   suspects[0].item_taken           AS item_taken,
-# MAGIC   suspects[0].concealment_method   AS concealment
-# MAGIC FROM samantha_wise.dais_2026.video_events_summit
-# MAGIC WHERE assessment IN ('CONFIRMED', 'LIKELY')
-# MAGIC   AND location IS NOT NULL AND location != ''
-# MAGIC   AND size(suspects) > 0
-# MAGIC ORDER BY assessment, confidence DESC
-# MAGIC LIMIT 5;
+# DBTITLE 1,Top incidents
+display(spark.sql(f"""
+  SELECT
+    element_at(split(path, '/'), -1)  AS filename,
+    assessment,
+    confidence,
+    location,
+    time_range,
+    suspects[0].person_id            AS person,
+    suspects[0].item_taken           AS item_taken,
+    suspects[0].concealment_method   AS concealment
+  FROM {output_fqn}
+  WHERE assessment IN ('CONFIRMED', 'LIKELY')
+    AND location IS NOT NULL AND location != ''
+    AND size(suspects) > 0
+  ORDER BY assessment, confidence DESC
+  LIMIT 5
+"""))
